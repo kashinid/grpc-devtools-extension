@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>gRPC-Web DevTools</title>
+  <style>
+    :root {
+      /* Цвета Taiga UI для светлой темы */
+      --bg: #f8f9fa;
+      /* tui-background */
+      --bg-panel: #ffffff;
+      /* tui-background-secondary */
+      --bg-hover: #f5f7fa;
+      /* tui-background-hover */
+      --bg-selected: #eef3fa;
+      /* tui-background-selected */
+      --border: #e0e4eb;
+      /* tui-border */
+      --text: #212529;
+      /* tui-text-primary */
+      --text-light: #6c757d;
+      /* tui-text-secondary */
+      --text-lighter: #495057;
+      /* tui-text-tertiary */
+      --accent: #3366ff;
+      /* tui-accent */
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      --shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 2px rgba(0, 0, 0, 0.24);
+      --transition: all 0.2s ease;
+      --success-bg: #e6f7ee;
+      --success-text: #00a650;
+      --warning-bg: #fff8e6;
+      --warning-text: #d48806;
+      --error-bg: #fff1f0;
+      --error-text: #cf1322;
+      --highlight: rgba(51, 102, 255, 0.2);
+      --highlight-current: var(--accent);
+      --code-bg: #f9fafb;
+    }
+
+    body {
+      font-family: var(--font);
+      margin: 0;
+      padding: 0;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+      color: var(--text);
+      background: var(--bg);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow);
+    }
+
+    .toolbar button,
+    .toolbar input {
+      font-size: 13px;
+      font-family: var(--font);
+    }
+
+    /* Кнопки */
+    .toolbar-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 6px;
+      border-radius: 6px;
+      transition: var(--transition);
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+    }
+
+    .toolbar-btn:hover {
+      background: var(--bg-hover);
+      color: var(--text-lighter);
+    }
+
+    /* Переключатель с использованием цветов Taiga UI */
+    #capture-toggle {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      position: relative;
+      padding: 0;
+      cursor: pointer;
+    }
+
+    #capture-toggle::before {
+      content: '';
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      opacity: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    #capture-toggle.on {
+      background: var(--success-bg);
+      color: var(--success-text);
+      border-color: var(--success-text);
+    }
+
+    #capture-toggle.on::before {
+      background: var(--success-text);
+      opacity: 1;
+    }
+
+    #capture-toggle.off {
+      background: var(--error-bg);
+      color: var(--error-text);
+      border-color: var(--error-text);
+    }
+
+    #capture-toggle.off::before {
+      background: var(--error-text);
+      opacity: 1;
+    }
+
+    /* Поиск с четкими границами */
+    #search-input {
+      flex: 1;
+      max-width: 220px;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg-panel);
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    #search-input:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(51, 102, 255, 0.2);
+    }
+
+    /* Навигация поиска */
+    .search-nav {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.9em;
+      color: var(--text-light);
+    }
+
+    .search-nav button {
+      width: 24px;
+      height: 24px;
+      font-size: 14px;
+      border-radius: 4px;
+    }
+
+    #search-count {
+      min-width: 45px;
+      text-align: center;
+      color: var(--text-lighter);
+      font-weight: 500;
+    }
+
+    /* Список запросов */
+    .requests-list {
+      width: 32%;
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      background: var(--bg-panel);
+    }
+
+    .requests-container {
+      flex: 1;
+      overflow-y: auto;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .empty {
+      padding: 24px;
+      text-align: center;
+      color: var(--text-light);
+      font-style: italic;
+    }
+
+    /* Добавляем четкие границы между запросами */
+    .request-item {
+      padding: 10px 12px;
+      cursor: pointer;
+      border-left: 3px solid transparent;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .request-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .request-item.selected {
+      background: var(--bg-selected);
+      font-weight: 600;
+      border-left-color: var(--accent);
+    }
+
+    /* УБРАНО: специальное выделение первого совпадения */
+    /* Все выделение теперь использует стандартный стиль selected */
+
+    .method-name {
+      font-weight: 600;
+      color: var(--accent);
+    }
+
+    .method-type {
+      font-size: 0.8em;
+      color: var(--text-light);
+    }
+
+    /* Детали */
+    .details {
+      flex: 1;
+      padding: 18px;
+      overflow-y: auto;
+      background: var(--bg-panel);
+      border-left: 1px solid var(--border);
+    }
+
+    .details h3 {
+      margin: 0 0 18px 0;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .details h4 {
+      margin-top: 16px;
+      margin-bottom: 8px;
+      color: var(--text-lighter);
+      font-weight: 600;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    pre {
+      background: var(--code-bg);
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text);
+      margin-top: 8px;
+    }
+
+    mark.highlight {
+      background-color: var(--highlight);
+      color: var(--text);
+      border-radius: 2px;
+      padding: 0 2px;
+      font-weight: bold;
+    }
+
+    /* Выделение текущего совпадения (более яркое) */
+    mark.highlight-current {
+      background-color: var(--highlight-current);
+      color: white;
+      border-radius: 2px;
+      padding: 0 2px;
+      font-weight: bold;
+    }
+
+    /* Скроллбар */
+    ::-webkit-scrollbar {
+      width: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #d0d0d0;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="requests-list">
+    <div class="toolbar">
+      <button class="toolbar-btn" id="clear-btn" title="Очистить список">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"></path>
+        </svg>
+      </button>
+      <button id="capture-toggle" class="off" title="Перехват выключен"></button>
+      <input type="text" id="search-input" placeholder="Поиск..." />
+      <button class="toolbar-btn" id="clear-search" title="Очистить поиск">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+          <path
+            d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z">
+          </path>
+        </svg>
+      </button>
+      <div class="search-nav">
+        <button class="toolbar-btn" id="search-prev" title="Предыдущее совпадение">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M15.41 16.59L10.83 12l4.58-4.59L14 6l-6 6 6 6 1.41-1.41z"></path>
+          </svg>
+        </button>
+        <span id="search-count">0/0</span>
+        <button class="toolbar-btn" id="search-next" title="Следующее совпадение">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+            <path d="M8.59 16.59L13.17 12 8.59 7.41 10 6l6 6-6 6-1.41-1.41z"></path>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="requests-container" id="requests-list">
+      <div class="empty">Нет gRPC-вызовов</div>
+    </div>
+  </div>
+
+  <div class="details" id="details">
+    <h3><span id="detail-method"></span> <small id="detail-type"></small></h3>
+
+    <h4>Request</h4>
+    <pre id="detail-request"></pre>
+
+    <h4>Response</h4>
+    <pre id="detail-response"></pre>
+
+    <h4>Error</h4>
+    <pre id="detail-error"></pre>
+  </div>
+
+  <script src="panel.js"></script>
+</body>
+
+</html>
