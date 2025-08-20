@@ -1,18 +1,54 @@
 // content-script.js
 
+// Флаги для отслеживания состояния внедрения скриптов
+let grpcWebInjectInjected = false;
+let connectWebInterceptorInjected = false;
+
 // === 1. Внедряем grpc-web-inject.js как внешний скрипт ===
-const script = document.createElement('script');
-script.src = chrome.runtime.getURL('grpc-web-inject.js');
-script.onload = () => {
-  script.remove(); // очищаем после загрузки
-};
-(document.head || document.documentElement).appendChild(script);
+function injectGrpcWebScript() {
+  if (grpcWebInjectInjected) {
+    console.debug('[content-script] grpc-web-inject.js already injected, skipping');
+    return;
+  }
+
+  const script = document.createElement('script');
+  script.src = chrome.runtime.getURL('grpc-web-inject.js');
+  script.onload = () => {
+    script.remove();
+    grpcWebInjectInjected = true;
+    console.debug('[content-script] grpc-web-inject.js injected and cleaned up');
+  };
+  script.onerror = (e) => {
+    console.error('[content-script] Failed to load grpc-web-inject.js', e);
+    grpcWebInjectInjected = false;
+  };
+  (document.head || document.documentElement).appendChild(script);
+}
 
 // === 2. Внедряем connect-web-interceptor.js ===
-const cs = document.createElement('script');
-cs.src = chrome.runtime.getURL('connect-web-interceptor.js');
-cs.onload = () => cs.remove();
-(document.head || document.documentElement).appendChild(cs);
+function injectConnectWebScript() {
+  if (connectWebInterceptorInjected) {
+    console.debug('[content-script] connect-web-interceptor.js already injected, skipping');
+    return;
+  }
+
+  const cs = document.createElement('script');
+  cs.src = chrome.runtime.getURL('connect-web-interceptor.js');
+  cs.onload = () => {
+    cs.remove();
+    connectWebInterceptorInjected = true;
+    console.debug('[content-script] connect-web-interceptor.js injected and cleaned up');
+  };
+  cs.onerror = (e) => {
+    console.error('[content-script] Failed to load connect-web-interceptor.js', e);
+    connectWebInterceptorInjected = false;
+  };
+  (document.head || document.documentElement).appendChild(cs);
+}
+
+// Внедряем скрипты при первой загрузке
+injectGrpcWebScript();
+injectConnectWebScript();
 
 // === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 // Вспомогательная функция для очистки данных перед сериализацией
@@ -42,6 +78,70 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 3;
 let panelConnected = true; // Флаг для отслеживания состояния панели
 
+// === Обработчик для BFCache ===
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) {
+    console.debug('[content-script] Page restored from BFCache, reconnecting...');
+
+    // Сбрасываем состояние подключения
+    panelConnected = true;
+
+    // Пересоздаем порт
+    if (devToolsPort) {
+      try {
+        devToolsPort.disconnect();
+      } catch (e) {
+        console.debug('[content-script] Error disconnecting port', e);
+      }
+      devToolsPort = null;
+    }
+
+    // Пытаемся переподключиться
+    connectToDevTools();
+
+    // Перезапускаем скрипты ТОЛЬКО ЕСЛИ они были удалены
+    if (!grpcWebInjectInjected) {
+      injectGrpcWebScript();
+    }
+    if (!connectWebInterceptorInjected) {
+      injectConnectWebScript();
+    }
+
+    // Повторно регистрируем обработчик сообщений
+    window.removeEventListener('message', handleMessageEvent);
+    window.addEventListener('message', handleMessageEvent, false);
+  }
+});
+
+// Добавляем обработчик для visibilitychange
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    console.debug('[content-script] Page became visible, checking connection...');
+
+    // Если соединение отсутствует, пытаемся переподключиться
+    if (!devToolsPort || !panelConnected) {
+      if (devToolsPort) {
+        try {
+          devToolsPort.disconnect();
+        } catch (e) {
+          console.debug('[content-script] Error disconnecting port', e);
+        }
+        devToolsPort = null;
+      }
+
+      connectToDevTools();
+
+      // Перезапускаем скрипты, если они были удалены
+      if (!grpcWebInjectInjected) {
+        injectGrpcWebScript();
+      }
+      if (!connectWebInterceptorInjected) {
+        injectConnectWebScript();
+      }
+    }
+  }
+});
+
 function connectToDevTools() {
   try {
     // Создаем порт для коммуникации с background
@@ -53,11 +153,14 @@ function connectToDevTools() {
       devToolsPort = null;
       panelConnected = false;
 
-      // Попытка переподключения
-      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-        reconnectAttempts++;
-        console.debug(`[content-script] Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
-        setTimeout(connectToDevTools, 500);
+      // Проверяем, видима ли страница перед переподключением
+      if (document.visibilityState === 'visible') {
+        // Попытка переподключения
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttempts++;
+          console.debug(`[content-script] Attempting to reconnect (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})`);
+          setTimeout(connectToDevTools, 500);
+        }
       }
     });
 
@@ -100,7 +203,7 @@ function handleMessageEvent(event) {
       });
     } catch (error) {
       // Игнорируем ошибку, связанную с BFCache
-      if (error.message.includes('message channel is closed')) {
+      if (error.message && error.message.includes('message channel is closed')) {
         console.debug('[content-script] Port closed due to BFCache, ignoring message');
         panelConnected = false;
         return;

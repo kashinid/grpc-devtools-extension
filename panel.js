@@ -19,26 +19,88 @@ const searchNextBtn = document.getElementById("search-next");
 const searchCountSpan = document.getElementById("search-count");
 
 // === ПОЛУЧАЕМ tabId ИЗ DevTools API ===
-const inspectedTabId = chrome.devtools.inspectedWindow.tabId;
+let inspectedTabId = null;
+let port = null;
+let contextValid = true;
+let isInitializing = false;
 
-// === Подключаемся к background ===
-const port = chrome.runtime.connect({ name: 'grpc-devtools-port' });
+// Попытаемся получить tabId безопасно
+try {
+  inspectedTabId = chrome.devtools.inspectedWindow.tabId;
+} catch (e) {
+  console.debug('[panel] Could not get tabId, extension context may be invalid', e);
+  contextValid = false;
+}
 
-// === ОТПРАВЛЯЕМ tabId СРАЗУ ПОСЛЕ ПОДКЛЮЧЕНИЯ ===
-port.postMessage({ type: 'init', tabId: inspectedTabId });
+// Проверка действительности контекста расширения
+function isExtensionContextValid() {
+  try {
+    // Проверяем базовые API Chrome
+    return typeof chrome !== 'undefined' &&
+      chrome.runtime &&
+      typeof chrome.runtime.id === 'string' &&
+      chrome.devtools &&
+      chrome.devtools.inspectedWindow;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Инициализация соединения
+function initConnection() {
+  if (!isExtensionContextValid()) {
+    console.debug('[panel] Extension context is invalid, cannot initialize connection');
+    contextValid = false;
+    return false;
+  }
+
+  try {
+    // Очищаем старый порт, если он существует
+    if (port) {
+      try {
+        port.disconnect();
+      } catch (e) {
+        // Игнорируем ошибку
+      }
+      port = null;
+    }
+
+    port = chrome.runtime.connect({ name: 'grpc-devtools-port' });
+
+    // Настройка обработчика сообщений
+    port.onMessage.addListener(messageListener);
+
+    // Отправляем tabId
+    if (inspectedTabId === null) {
+      try {
+        inspectedTabId = chrome.devtools.inspectedWindow.tabId;
+      } catch (e) {
+        console.debug('[panel] Could not get tabId during initialization', e);
+        return false;
+      }
+    }
+
+    port.postMessage({ type: 'init', tabId: inspectedTabId });
+    console.debug('[panel] Connection initialized successfully');
+    return true;
+  } catch (e) {
+    console.debug('[panel] Failed to initialize connection', e);
+    return false;
+  }
+}
 
 // === State ===
 let requests = [];
 let selectedId = null;
-let isCapturing = true; // По умолчанию включено
+let isCapturing = true;
 let requestIdCounter = 0;
 
 let currentSearch = "";
 let allHighlights = [];
 let currentHighlightIndex = -1;
-let isNavigating = false; // Флаг для отслеживания навигации
-let hasSearchResults = false; // Новый флаг для отслеживания наличия результатов поиска
-let userInitiatedSelection = false; // НОВЫЙ ФЛАГ: выбор пользователя
+let isNavigating = false;
+let hasSearchResults = false;
+let userInitiatedSelection = false;
 
 // Таймеры для debounce и отложенных операций
 let searchDebounceTimer = null;
@@ -77,6 +139,8 @@ function highlightInElement(element, query) {
 
 // === UI Functions ===
 function renderList() {
+  if (!contextValid) return;
+
   const filteredRequests = filterRequests();
   const query = currentSearch.trim().toLowerCase();
 
@@ -131,6 +195,8 @@ function renderList() {
 }
 
 function toggleRequest(id) {
+  if (!contextValid) return;
+
   userInitiatedSelection = true; // Помечаем, что выбор инициирован пользователем
 
   if (selectedId === id) {
@@ -183,6 +249,8 @@ function toggleRequest(id) {
 
 // === Search & Highlight ===
 function performSearch() {
+  if (!contextValid) return;
+
   const query = currentSearch.trim();
   clearHighlights();
 
@@ -247,6 +315,8 @@ function hasSearchResultsForSelected() {
 }
 
 function filterRequests() {
+  if (!contextValid) return [];
+
   const query = currentSearch.toLowerCase().trim();
   if (!query) return requests;
 
@@ -260,24 +330,28 @@ function filterRequests() {
 }
 
 function updateSearchCount() {
+  if (!contextValid) return;
+
   searchCountSpan.textContent = allHighlights.length > 0
     ? `${currentHighlightIndex + 1}/${allHighlights.length}`
     : '0/0';
 }
 
 function scrollToCurrentHighlight() {
-  if (currentHighlightIndex >= 0 && allHighlights[currentHighlightIndex]) {
-    allHighlights[currentHighlightIndex].scrollIntoView({
-      behavior: 'smooth',
-      block: 'center'
-    });
-  }
+  if (!contextValid || currentHighlightIndex < 0 || !allHighlights[currentHighlightIndex]) return;
+
+  allHighlights[currentHighlightIndex].scrollIntoView({
+    behavior: 'smooth',
+    block: 'center'
+  });
 }
 
 function clearHighlights() {
+  if (!contextValid) return;
+
   // Очищаем детали
   [detailRequest, detailResponse, detailError].forEach(el => {
-    if (el.children.length > 0) {
+    if (el && el.children.length > 0) {
       el.textContent = el.textContent;
     }
   });
@@ -285,7 +359,7 @@ function clearHighlights() {
   // Очищаем подсветку в списке
   document.querySelectorAll('.request-item .method-name, .request-item .method-type, .request-item div')
     .forEach(el => {
-      if (el.children.length > 0) {
+      if (el && el.children.length > 0) {
         el.textContent = el.textContent;
       }
     });
@@ -297,27 +371,41 @@ function clearHighlights() {
 
 // === Controls ===
 clearBtn.onclick = () => {
+  if (!contextValid) return;
+
   requests = [];
   selectedId = null;
   details.style.display = 'none';
   renderList();
-  chrome.runtime.sendMessage({ action: "clearRequests" });
+
+  if (isExtensionContextValid()) {
+    chrome.runtime.sendMessage({ action: "clearRequests" });
+  }
 };
 
 function updateCaptureButton() {
+  if (!contextValid) return;
+
   captureToggle.classList.toggle("on", isCapturing);
   captureToggle.classList.toggle("off", !isCapturing);
   captureToggle.title = isCapturing ? "Перехват включён" : "Перехват выключен";
 }
 
 captureToggle.onclick = () => {
+  if (!contextValid) return;
+
   isCapturing = !isCapturing;
   updateCaptureButton();
-  chrome.runtime.sendMessage({ action: "setCapture", enabled: isCapturing });
+
+  if (isExtensionContextValid()) {
+    chrome.runtime.sendMessage({ action: "setCapture", enabled: isCapturing });
+  }
 };
 
 // === Search Controls ===
 searchInput.addEventListener("input", () => {
+  if (!contextValid) return;
+
   currentSearch = searchInput.value;
   isNavigating = false;
 
@@ -339,6 +427,8 @@ searchInput.addEventListener("input", () => {
 });
 
 searchInput.addEventListener("keydown", (e) => {
+  if (!contextValid) return;
+
   if (e.key === "Escape") {
     clearSearchBtn.click();
     searchInput.blur();
@@ -351,6 +441,8 @@ searchInput.addEventListener("keydown", (e) => {
 });
 
 clearSearchBtn.onclick = () => {
+  if (!contextValid) return;
+
   searchInput.value = "";
   currentSearch = "";
   isNavigating = false;
@@ -361,6 +453,8 @@ clearSearchBtn.onclick = () => {
 
 // Обновляем состояние кнопок навигации
 function updateNavigationButtonsState() {
+  if (!contextValid) return;
+
   const hasResults = currentSearch.trim() && hasSearchResults;
 
   searchPrevBtn.disabled = !hasResults;
@@ -377,7 +471,7 @@ function updateNavigationButtonsState() {
 }
 
 searchNextBtn.onclick = () => {
-  if (!hasSearchResults) return;
+  if (!contextValid || !hasSearchResults) return;
 
   isNavigating = true;
 
@@ -406,7 +500,7 @@ searchNextBtn.onclick = () => {
 };
 
 searchPrevBtn.onclick = () => {
-  if (!hasSearchResults) return;
+  if (!contextValid || !hasSearchResults) return;
 
   isNavigating = true;
 
@@ -436,35 +530,103 @@ searchPrevBtn.onclick = () => {
 
 // === Message Listener ===
 const messageListener = (message) => {
-  if (message.action === "gRPCNetworkCall" && isCapturing) {
-    const data = message.data;
-    const id = ++requestIdCounter;
+  if (!contextValid || message.action !== "gRPCNetworkCall" || !isCapturing) return;
 
-    const request = {
-      id,
-      method: data.method,
-      methodType: data.methodType,
-      request: data.request,
-      response: data.response,
-      error: data.error,
-      timestamp: Date.now(),
-    };
+  const data = message.data;
+  const id = ++requestIdCounter;
 
-    requests.push(request);
+  const request = {
+    id,
+    method: data.method,
+    methodType: data.methodType,
+    request: data.request,
+    response: data.response,
+    error: data.error,
+    timestamp: Date.now(),
+  };
 
-    if (requests.length > 100) {
-      requests.shift();
-    }
+  requests.push(request);
 
-    if (!selectedId) {
-      toggleRequest(id);
-    } else {
-      renderList();
-    }
+  if (requests.length > 100) {
+    requests.shift();
+  }
+
+  if (!selectedId) {
+    toggleRequest(id);
+  } else {
+    renderList();
   }
 };
 
-port.onMessage.addListener(messageListener);
+// === Проверка и восстановление соединения ===
+function checkAndRestoreConnection() {
+  if (!contextValid) {
+    console.debug('[panel] Context is not valid, cannot check connection');
+    return false;
+  }
+
+  if (!isExtensionContextValid()) {
+    console.debug('[panel] Extension context is invalid');
+    contextValid = false;
+    cleanupResources();
+    return false;
+  }
+
+  // Проверяем, можем ли мы отправить сообщение
+  try {
+    if (port) {
+      port.postMessage({ action: 'ping' });
+      return true;
+    }
+  } catch (e) {
+    // Если ошибка связана с недействительным контекстом, помечаем контекст как недействительный
+    if (e.message && e.message.includes('Extension context invalidated')) {
+      console.debug('[panel] Extension context invalidated, marking as invalid');
+      contextValid = false;
+      cleanupResources();
+      return false;
+    }
+  }
+
+  // Если порта нет или он недоступен, пытаемся восстановить соединение
+  if (!port || !isPortConnected(port)) {
+    return initConnection();
+  }
+
+  return true;
+}
+
+// Проверка, подключен ли порт
+function isPortConnected(port) {
+  try {
+    // Проверяем, можем ли мы отправить сообщение
+    port.postMessage({ action: 'check' });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// === Обработчик видимости для принудительного обновления ===
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    console.debug('[panel] Panel became visible, checking connection...');
+
+    // Проверяем и восстанавливаем соединение
+    if (checkAndRestoreConnection()) {
+      console.debug('[panel] Connection check successful');
+
+      // Если соединение активно, обновим интерфейс
+      if (currentSearch.trim()) {
+        performSearch();
+      } else {
+        renderList();
+      }
+    } else {
+      console.debug('[panel] Could not restore connection');
+    }
+  }
+});
 
 // === Очистка ресурсов при закрытии панели ===
 function cleanupResources() {
@@ -485,16 +647,14 @@ function cleanupResources() {
   }
 
   // Отписываемся от сообщений
-  port.onMessage.removeListener(messageListener);
-
-  // Отправляем сигнал о закрытии панели
-  try {
-    port.postMessage({
-      action: 'panelClosed',
-      tabId: inspectedTabId
-    });
-  } catch (e) {
-    console.debug('[panel] Could not send panelClosed message', e);
+  if (port) {
+    try {
+      port.onMessage.removeListener(messageListener);
+      port.disconnect();
+    } catch (e) {
+      // Игнорируем ошибку
+    }
+    port = null;
   }
 
   // Очищаем таймеры
@@ -509,20 +669,68 @@ window.addEventListener('beforeunload', cleanupResources);
 // === Дополнительная защита от утечек памяти ===
 window.addEventListener('unload', () => {
   // Финальная очистка
-  try {
-    port.disconnect();
-  } catch (e) {
-    console.debug('[panel] Could not disconnect port', e);
+  if (port) {
+    try {
+      port.disconnect();
+    } catch (e) {
+      console.debug('[panel] Could not disconnect port', e);
+    }
+    port = null;
   }
   console.debug('[panel] Port disconnected');
 });
 
-// === Init ===
-details.style.display = 'none';
-detailRequest.textContent = '(нет)';
-detailResponse.textContent = '(нет)';
-detailError.textContent = '(нет)';
+// === Инициализация ===
+function initPanel() {
+  if (!isExtensionContextValid()) {
+    console.debug('[panel] Extension context is invalid, cannot initialize');
+    contextValid = false;
 
-updateCaptureButton();
-performSearch();
-updateNavigationButtonsState();
+    // Показываем сообщение об ошибке
+    if (requestsList) {
+      requestsList.innerHTML = '<div class="empty">Расширение недоступно. Попробуйте обновить страницу.</div>';
+    }
+    return;
+  }
+
+  contextValid = true;
+
+  // Инициализируем соединение
+  if (!initConnection()) {
+    console.debug('[panel] Failed to initialize connection');
+    contextValid = false;
+
+    if (requestsList) {
+      requestsList.innerHTML = '<div class="empty">Не удалось подключиться к расширению. Попробуйте обновить страницу.</div>';
+    }
+    return;
+  }
+
+  // Инициализируем UI
+  details.style.display = 'none';
+  detailRequest.textContent = '(нет)';
+  detailResponse.textContent = '(нет)';
+  detailError.textContent = '(нет)';
+
+  updateCaptureButton();
+  performSearch();
+  updateNavigationButtonsState();
+
+  console.debug('[panel] Panel initialized successfully');
+}
+
+// Инициализируем панель
+initPanel();
+
+// Добавляем обработчик для ошибок
+window.addEventListener('error', (event) => {
+  if (event.message && event.message.includes('Extension context invalidated')) {
+    console.debug('[panel] Global error: Extension context invalidated');
+    contextValid = false;
+    cleanupResources();
+
+    if (requestsList) {
+      requestsList.innerHTML = '<div class="empty">Расширение было обновлено в фоновом режиме. Пожалуйста, перезагрузите DevTools (закройте и откройте панель заново).</div>';
+    }
+  }
+});
